@@ -39,11 +39,26 @@ else:
     TOKEN_URL = "https://sandbox-oauth.piste.gouv.fr/api/oauth/token"
     API_BASE = "https://sandbox-api.piste.gouv.fr/dila/legifrance/lf-engine-app"
 
-# Mots-clés métier
-MOTS_CLES = ["CEE", "BAR-TH", "BAR-EN", "RENOVATION", "RÉNOVATION", "ARRETE",
-             "ARRÊTÉ", "PRIME RENOV", "MAPRIMERENOV", "POMPE A CHALEUR",
-             "POMPE À CHALEUR", "TRER", "ANAH", "RGE", "CUMAC", "RE2020",
-             "ISOLATION", "ENERGETIQUE", "ÉNERGÉTIQUE", "CHAUDIERE", "PHOTOVOLTA"]
+# Mots-clés métier — ciblés rénovation énergétique (évite le bruit du JO)
+MOTS_CLES = [
+    "CEE", "BAR-TH", "BAR-EN", "BAR-EQ",
+    "MAPRIMERENOV", "MAPRIMERÉNOV", "PRIME RENOV", "PRIME RÉNOV",
+    "ANAH", "RGE", "CUMAC", "RE2020",
+    "ISOLATION", "ISOLANT",
+    "POMPE A CHALEUR", "POMPE À CHALEUR",
+    "CHAUDIERE", "CHAUDIÈRE",
+    "PHOTOVOLTA", "PANNEAU SOLAIRE", "SOLAIRE THERMIQUE",
+    "RENOVATION ENERGETIQUE", "RÉNOVATION ÉNERGÉTIQUE",
+    "PERFORMANCE ENERGETIQUE", "PERFORMANCE ÉNERGÉTIQUE",
+    "TRANSITION ENERGETIQUE", "TRANSITION ÉNERGÉTIQUE",
+    "CERTIFICAT D'ECONOMIE", "CERTIFICAT D'ÉCONOMIE",
+    "ECONOMIE D'ENERGIE", "ÉCONOMIE D'ÉNERGIE",
+    "VENTILATION", "VMC",
+    "DPE", "DIAGNOSTIC DE PERFORMANCE",
+    "EFFICACITE ENERGETIQUE", "EFFICACITÉ ÉNERGÉTIQUE",
+    "MENUISERIE", "FENETRE", "FENÊTRE",
+    "BIOMASSE", "GEOTHERMIE", "GÉOTHERMIE",
+]
 
 
 def get_token():
@@ -58,33 +73,57 @@ def get_token():
     return resp.json()["access_token"]
 
 
-def detecter_type(title):
-    t = (title or "").strip().lower()
+def detecter_type(nature, titre):
+    """Détermine le type lisible à partir du champ 'nature' (ou du titre)."""
+    n = (nature or "").strip().upper()
+    correspondances = {
+        "LOI": "Loi",
+        "DECRET": "Décret",
+        "ARRETE": "Arrêté",
+        "ORDONNANCE": "Ordonnance",
+        "CIRCULAIRE": "Circulaire",
+        "AVIS": "Avis",
+        "DECISION": "Décision",
+        "DELIBERATION": "Délibération",
+        "ARRET": "Arrêt",
+        "RECOMMANDATION": "Recommandation",
+        "INFORMATIONS_PARLEMENTAIRES": "Info parlementaire",
+        "ANNONCES": "Annonce",
+    }
+    if n in correspondances:
+        return correspondances[n]
+    # Repli sur le titre
+    t = (titre or "").strip().lower()
     if t.startswith("décret") or t.startswith("decret"): return "Décret"
     if t.startswith("arrêté") or t.startswith("arrete"): return "Arrêté"
     if t.startswith("loi "): return "Loi"
-    if t.startswith("ordonnance"): return "Ordonnance"
-    if t.startswith("circulaire"): return "Circulaire"
-    if t.startswith("avis"): return "Avis"
-    if t.startswith("décision") or t.startswith("decision"): return "Décision"
     return "Texte"
 
 
 def collecter_textes(noeud, sortie):
-    """Parcourt récursivement le sommaire JORF et récupère chaque texte."""
+    """
+    Parcourt récursivement le sommaire JORF.
+    Structure réelle Légifrance :
+      containers[].structure.tms[]  (rubriques, récursif via 'tms')
+      chaque rubrique a un tableau 'liensTxt[]' contenant les textes :
+        { "id": "JORFTEXT...", "titre": "...", "nature": "ARRETE", ... }
+    """
     if isinstance(noeud, dict):
-        ident = noeud.get("id") or noeud.get("cid") or ""
-        titre = noeud.get("title") or noeud.get("pathTitle") or ""
-        if isinstance(titre, list):
-            titre = " ".join(str(x) for x in titre)
-        if ident and "JORFTEXT" in str(ident) and titre:
-            sortie.append({
-                "titre": titre.strip(),
-                "type": detecter_type(titre),
-                "nor": noeud.get("nor") or ident,
-                "ident": ident,
-                "lien": f"https://www.legifrance.gouv.fr/jorf/id/{ident}",
-            })
+        # Textes directement rattachés à cette rubrique
+        for txt in noeud.get("liensTxt", []) or []:
+            ident = txt.get("id") or ""
+            titre = txt.get("titre") or ""
+            if ident and "JORFTEXT" in str(ident) and titre:
+                sortie.append({
+                    "titre": titre.strip(),
+                    "type": detecter_type(txt.get("nature"), titre),
+                    "nature": txt.get("nature") or "",
+                    "ministere": txt.get("ministere") or txt.get("emetteur") or "",
+                    "nor": ident,
+                    "ident": ident,
+                    "lien": f"https://www.legifrance.gouv.fr/jorf/id/{ident}",
+                })
+        # On descend dans tous les sous-éléments (notamment 'tms', 'structure', 'containers')
         for v in noeud.values():
             collecter_textes(v, sortie)
     elif isinstance(noeud, list):
@@ -101,19 +140,40 @@ def veille_journal_officiel(mot_cle=None):
     r = requests.post(f"{API_BASE}/consult/lastNJo",
                       json={"nbElement": 1}, headers=headers, timeout=30)
     r.raise_for_status()
-    jos = r.json().get("results") or r.json().get("jo") or []
-    if not jos:
+    payload = r.json()
+    # Le dernier JO peut arriver sous 'results', 'containers' ou 'jo'
+    containers = payload.get("containers") or payload.get("results") or payload.get("jo") or []
+    if not containers:
         return {"date": "", "textes": [], "info": "Aucun JO retourné par l'API"}
 
-    dernier = jos[0]
+    dernier = containers[0]
     jo_id = dernier.get("id") or dernier.get("cid")
-    jo_date = dernier.get("dateJo") or dernier.get("date") or ""
 
-    # 2) Récupérer le sommaire de ce JO
+    # Date : datePubli est un timestamp en millisecondes
+    jo_date = ""
+    ts = dernier.get("datePubli")
+    if ts:
+        try:
+            jo_date = datetime.fromtimestamp(ts / 1000).strftime("%d/%m/%Y")
+        except Exception:
+            jo_date = str(ts)
+
+    # 2) Récupérer le sommaire complet de ce JO
     r2 = requests.post(f"{API_BASE}/consult/jorfCont",
                        json={"id": jo_id}, headers=headers, timeout=30)
     r2.raise_for_status()
     sommaire = r2.json()
+
+    # Récupérer la date depuis le sommaire si pas déjà trouvée
+    if not jo_date:
+        som_containers = sommaire.get("containers") or []
+        if som_containers:
+            ts2 = som_containers[0].get("datePubli")
+            if ts2:
+                try:
+                    jo_date = datetime.fromtimestamp(ts2 / 1000).strftime("%d/%m/%Y")
+                except Exception:
+                    jo_date = str(ts2)
 
     # 3) Extraire tous les textes, puis filtrer par mots-clés
     tous = []
@@ -129,7 +189,8 @@ def veille_journal_officiel(mot_cle=None):
         if mots:
             resultats.append({**t, "motsCles": list(set(mots)), "energie": True})
 
-    return {"date": jo_date, "jo_id": jo_id, "textes": resultats}
+    return {"date": jo_date, "jo_id": jo_id,
+            "total_textes_jo": len(vus), "textes": resultats}
 
 
 # ─── ENDPOINTS ──────────────────────────────────────────────────
@@ -145,6 +206,7 @@ def api_veille():
             "env": ENV,
             "date": data.get("date", ""),
             "count": len(data["textes"]),
+            "total_textes_jo": data.get("total_textes_jo", 0),
             "motsCles": MOTS_CLES,
             "source": f"API PISTE Légifrance ({ENV})",
             "textes": data["textes"],
@@ -163,29 +225,23 @@ def api_debug():
         token = get_token()
         headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
 
-        # Étape 1 : dernier JO
         r = requests.post(f"{API_BASE}/consult/lastNJo",
                           json={"nbElement": 1}, headers=headers, timeout=30)
-        last_status = r.status_code
         last_json = r.json()
-
-        jos = last_json.get("results") or last_json.get("jo") or []
-        if not jos:
-            return jsonify({"etape": "lastNJo", "status": last_status,
-                            "cles_reponse": list(last_json.keys()),
+        containers = last_json.get("containers") or last_json.get("results") or []
+        if not containers:
+            return jsonify({"etape": "lastNJo", "cles_reponse": list(last_json.keys()),
                             "brut": last_json})
-
-        dernier = jos[0]
+        dernier = containers[0]
         jo_id = dernier.get("id") or dernier.get("cid")
-
-        # Étape 2 : sommaire du JO
         r2 = requests.post(f"{API_BASE}/consult/jorfCont",
                            json={"id": jo_id}, headers=headers, timeout=30)
         som = r2.json()
+        tous = []
+        collecter_textes(som, tous)
         return jsonify({"etape": "jorfCont", "jo_id": jo_id,
-                        "cles_lastNJo": list(dernier.keys()),
-                        "cles_sommaire": list(som.keys()),
-                        "extrait_sommaire": str(som)[:2000]})
+                        "total_textes_extraits": len(tous),
+                        "apercu_5_premiers": tous[:5]})
     except requests.HTTPError as e:
         return jsonify({"error": e.response.status_code, "detail": e.response.text[:500]})
     except Exception as e:
@@ -222,7 +278,8 @@ if __name__ == "__main__":
     if CLIENT_ID and CLIENT_SECRET:
         try:
             data = veille_journal_officiel()
-            print(f"JO du {data.get('date')} — {len(data['textes'])} texte(s) énergie :")
+            print(f"JO du {data.get('date')} — {len(data['textes'])} texte(s) énergie "
+                  f"sur {data.get('total_textes_jo')} au total :")
             for i, t in enumerate(data["textes"], 1):
                 print(f"  [{i}] {t['type']} : {t['titre'][:80]}")
                 print(f"      {t['lien']}")
