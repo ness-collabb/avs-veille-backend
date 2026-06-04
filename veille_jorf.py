@@ -10,11 +10,12 @@ Installation :
 Variables d'environnement à définir sur Render (onglet Environment) :
     PISTE_CLIENT_ID      = ton client_id
     PISTE_CLIENT_SECRET  = ton client_secret
-    PISTE_ENV            = "sandbox"  (ou "production" plus tard)
+    PISTE_ENV            = "sandbox"  (ou "production")
 
 Endpoints :
     GET /api/veille      → textes énergie du dernier JORF
     GET /api/health      → test de vie + état de connexion PISTE
+    GET /api/debug       → inspection brute de la réponse Légifrance (temporaire)
 """
 
 import os
@@ -38,7 +39,7 @@ else:
     TOKEN_URL = "https://sandbox-oauth.piste.gouv.fr/api/oauth/token"
     API_BASE = "https://sandbox-api.piste.gouv.fr/dila/legifrance/lf-engine-app"
 
-# Mots-clés métier (repris de ton script d'origine)
+# Mots-clés métier
 MOTS_CLES = ["CEE", "BAR-TH", "BAR-EN", "RENOVATION", "RÉNOVATION", "ARRETE",
              "ARRÊTÉ", "PRIME RENOV", "MAPRIMERENOV", "POMPE A CHALEUR",
              "POMPE À CHALEUR", "TRER", "ANAH", "RGE", "CUMAC", "RE2020",
@@ -72,7 +73,6 @@ def detecter_type(title):
 def collecter_textes(noeud, sortie):
     """Parcourt récursivement le sommaire JORF et récupère chaque texte."""
     if isinstance(noeud, dict):
-        # Un texte a généralement un 'id' (JORFTEXT...) et un 'title' / 'pathTitle'
         ident = noeud.get("id") or noeud.get("cid") or ""
         titre = noeud.get("title") or noeud.get("pathTitle") or ""
         if isinstance(titre, list):
@@ -85,7 +85,6 @@ def collecter_textes(noeud, sortie):
                 "ident": ident,
                 "lien": f"https://www.legifrance.gouv.fr/jorf/id/{ident}",
             })
-        # On descend dans tous les sous-éléments
         for v in noeud.values():
             collecter_textes(v, sortie)
     elif isinstance(noeud, list):
@@ -157,6 +156,42 @@ def api_veille():
         return jsonify({"error": str(e), "textes": []}), 500
 
 
+@app.route("/api/debug")
+def api_debug():
+    """Route temporaire : inspecte la structure brute renvoyée par Légifrance."""
+    try:
+        token = get_token()
+        headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+
+        # Étape 1 : dernier JO
+        r = requests.post(f"{API_BASE}/consult/lastNJo",
+                          json={"nbElement": 1}, headers=headers, timeout=30)
+        last_status = r.status_code
+        last_json = r.json()
+
+        jos = last_json.get("results") or last_json.get("jo") or []
+        if not jos:
+            return jsonify({"etape": "lastNJo", "status": last_status,
+                            "cles_reponse": list(last_json.keys()),
+                            "brut": last_json})
+
+        dernier = jos[0]
+        jo_id = dernier.get("id") or dernier.get("cid")
+
+        # Étape 2 : sommaire du JO
+        r2 = requests.post(f"{API_BASE}/consult/jorfCont",
+                           json={"id": jo_id}, headers=headers, timeout=30)
+        som = r2.json()
+        return jsonify({"etape": "jorfCont", "jo_id": jo_id,
+                        "cles_lastNJo": list(dernier.keys()),
+                        "cles_sommaire": list(som.keys()),
+                        "extrait_sommaire": str(som)[:2000]})
+    except requests.HTTPError as e:
+        return jsonify({"error": e.response.status_code, "detail": e.response.text[:500]})
+    except Exception as e:
+        return jsonify({"error": str(e)})
+
+
 @app.route("/api/health")
 def health():
     ok_creds = bool(CLIENT_ID and CLIENT_SECRET)
@@ -180,6 +215,8 @@ def health():
                     "token_obtenu": token_ok,
                     "erreur": erreur,
                     "detail": detail})
+
+
 if __name__ == "__main__":
     print(f"--- Veille JORF via API PISTE ({ENV}) ---")
     if CLIENT_ID and CLIENT_SECRET:
