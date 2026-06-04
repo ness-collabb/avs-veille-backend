@@ -180,6 +180,40 @@ def health():
                     "token_obtenu": token_ok,
                     "erreur": erreur,
                     "detail": detail})
+  @app.route("/api/debug")
+def api_debug():
+    try:
+        token = get_token()
+        headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+
+        # Étape 1 : dernier JO
+        r = requests.post(f"{API_BASE}/consult/lastNJo",
+                          json={"nbElement": 1}, headers=headers, timeout=30)
+        last_status = r.status_code
+        last_json = r.json()
+
+        jos = last_json.get("results") or last_json.get("jo") or []
+        if not jos:
+            # On renvoie la réponse brute pour voir la vraie structure
+            return jsonify({"etape": "lastNJo", "status": last_status,
+                            "cles_reponse": list(last_json.keys()),
+                            "brut": last_json})
+
+        dernier = jos[0]
+        jo_id = dernier.get("id") or dernier.get("cid")
+
+        # Étape 2 : sommaire
+        r2 = requests.post(f"{API_BASE}/consult/jorfCont",
+                           json={"id": jo_id}, headers=headers, timeout=30)
+        som = r2.json()
+        return jsonify({"etape": "jorfCont", "jo_id": jo_id,
+                        "cles_lastNJo": list(dernier.keys()),
+                        "cles_sommaire": list(som.keys()),
+                        "extrait_sommaire": str(som)[:2000]})
+    except requests.HTTPError as e:
+        return jsonify({"error": e.response.status_code, "detail": e.response.text[:500]})
+    except Exception as e:
+        return jsonify({"error": str(e)})
 
 
 if __name__ == "__main__":
