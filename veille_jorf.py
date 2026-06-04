@@ -161,15 +161,25 @@ def api_veille():
 def health():
     ok_creds = bool(CLIENT_ID and CLIENT_SECRET)
     token_ok = False
+    erreur = None
+    detail = None
     if ok_creds:
         try:
             get_token()
             token_ok = True
-        except Exception:
-            token_ok = False
+        except requests.HTTPError as e:
+            erreur = f"HTTP {e.response.status_code}"
+            detail = e.response.text[:300]
+        except Exception as e:
+            erreur = str(e)
     return jsonify({"status": "ok", "env": ENV,
+                    "token_url": TOKEN_URL,
+                    "client_id_longueur": len(CLIENT_ID),
+                    "secret_longueur": len(CLIENT_SECRET),
                     "credentials_presentes": ok_creds,
-                    "token_obtenu": token_ok})
+                    "token_obtenu": token_ok,
+                    "erreur": erreur,
+                    "detail": detail})
 
 
 if __name__ == "__main__":
@@ -186,4 +196,3 @@ if __name__ == "__main__":
     else:
         print("⚠️ Définis PISTE_CLIENT_ID et PISTE_CLIENT_SECRET")
     app.run(debug=True, port=5000)
-  
