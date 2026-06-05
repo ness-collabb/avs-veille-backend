@@ -19,6 +19,7 @@ Endpoints :
 """
 
 import os
+import re
 import requests
 from datetime import datetime, date, timedelta
 from flask import Flask, jsonify, request
@@ -59,6 +60,31 @@ MOTS_CLES = [
     "MENUISERIE", "FENETRE", "FENÊTRE",
     "BIOMASSE", "GEOTHERMIE", "GÉOTHERMIE",
 ]
+
+# Pré-compilation : chaque mot-clé devient un motif "mot entier"
+# (frontières de mot) pour éviter les faux positifs comme
+# "RGE" dans "chaRGE" / "concieRGE", ou "CEE" dans un fragment.
+def _construire_motifs(cles):
+    motifs = []
+    for m in cles:
+        pattern = r"(?<![A-Za-zÀ-ÿ0-9])" + re.escape(m) + r"(?![A-Za-zÀ-ÿ0-9])"
+        motifs.append((m, re.compile(pattern, re.IGNORECASE)))
+    return motifs
+
+MOTIFS = _construire_motifs(MOTS_CLES)
+
+
+def trouver_mots_cles(titre, cles=None):
+    """Retourne la liste des mots-clés trouvés comme MOTS ENTIERS dans le titre."""
+    if cles is None:
+        return [m for m, rx in MOTIFS if rx.search(titre)]
+    # Cas filtre custom (paramètre ?q=...)
+    trouves = []
+    for m in cles:
+        pattern = r"(?<![A-Za-zÀ-ÿ0-9])" + re.escape(m) + r"(?![A-Za-zÀ-ÿ0-9])"
+        if re.search(pattern, titre, re.IGNORECASE):
+            trouves.append(m)
+    return trouves
 
 
 def get_token():
@@ -132,7 +158,6 @@ def collecter_textes(noeud, sortie):
 
 
 def veille_journal_officiel(mot_cle=None):
-    cles = [mot_cle.upper()] if mot_cle else MOTS_CLES
     token = get_token()
     headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
 
@@ -175,17 +200,17 @@ def veille_journal_officiel(mot_cle=None):
                 except Exception:
                     jo_date = str(ts2)
 
-    # 3) Extraire tous les textes, puis filtrer par mots-clés
+    # 3) Extraire tous les textes, puis filtrer par mots-clés (mot entier)
     tous = []
     collecter_textes(sommaire, tous)
     resultats = []
     vus = set()
+    custom = [mot_cle.upper()] if mot_cle else None
     for t in tous:
         if t["ident"] in vus:
             continue
         vus.add(t["ident"])
-        haut = t["titre"].upper()
-        mots = [m for m in cles if m in haut]
+        mots = trouver_mots_cles(t["titre"], custom)
         if mots:
             resultats.append({**t, "motsCles": list(set(mots)), "energie": True})
 
