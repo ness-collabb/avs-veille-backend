@@ -10,12 +10,12 @@ Installation :
 Variables d'environnement à définir sur Render (onglet Environment) :
     PISTE_CLIENT_ID      = ton client_id
     PISTE_CLIENT_SECRET  = ton client_secret
-    PISTE_ENV            = "sandbox"  (ou "production")
+    PISTE_ENV            = "production"   (ou "sandbox" pour tester)
 
 Endpoints :
     GET /api/veille      → textes énergie du dernier JORF
+    GET /api/veille?q=mot → filtre sur un mot précis
     GET /api/health      → test de vie + état de connexion PISTE
-    GET /api/debug       → inspection brute de la réponse Légifrance (temporaire)
 """
 
 import os
@@ -40,7 +40,7 @@ else:
     TOKEN_URL = "https://sandbox-oauth.piste.gouv.fr/api/oauth/token"
     API_BASE = "https://sandbox-api.piste.gouv.fr/dila/legifrance/lf-engine-app"
 
-# Mots-clés métier — ciblés rénovation énergétique (évite le bruit du JO)
+# ─── MOTS-CLÉS MÉTIER (ciblés rénovation énergétique) ───────────────
 MOTS_CLES = [
     "CEE", "BAR-TH", "BAR-EN", "BAR-EQ",
     "MAPRIMERENOV", "MAPRIMERÉNOV", "PRIME RENOV", "PRIME RÉNOV",
@@ -61,6 +61,7 @@ MOTS_CLES = [
     "BIOMASSE", "GEOTHERMIE", "GÉOTHERMIE",
 ]
 
+
 # Pré-compilation : chaque mot-clé devient un motif "mot entier"
 # (frontières de mot) pour éviter les faux positifs comme
 # "RGE" dans "chaRGE" / "concieRGE", ou "CEE" dans un fragment.
@@ -71,6 +72,7 @@ def _construire_motifs(cles):
         motifs.append((m, re.compile(pattern, re.IGNORECASE)))
     return motifs
 
+
 MOTIFS = _construire_motifs(MOTS_CLES)
 
 
@@ -78,7 +80,6 @@ def trouver_mots_cles(titre, cles=None):
     """Retourne la liste des mots-clés trouvés comme MOTS ENTIERS dans le titre."""
     if cles is None:
         return [m for m, rx in MOTIFS if rx.search(titre)]
-    # Cas filtre custom (paramètre ?q=...)
     trouves = []
     for m in cles:
         pattern = r"(?<![A-Za-zÀ-ÿ0-9])" + re.escape(m) + r"(?![A-Za-zÀ-ÿ0-9])"
@@ -118,7 +119,6 @@ def detecter_type(nature, titre):
     }
     if n in correspondances:
         return correspondances[n]
-    # Repli sur le titre
     t = (titre or "").strip().lower()
     if t.startswith("décret") or t.startswith("decret"): return "Décret"
     if t.startswith("arrêté") or t.startswith("arrete"): return "Arrêté"
@@ -135,7 +135,6 @@ def collecter_textes(noeud, sortie):
         { "id": "JORFTEXT...", "titre": "...", "nature": "ARRETE", ... }
     """
     if isinstance(noeud, dict):
-        # Textes directement rattachés à cette rubrique
         for txt in noeud.get("liensTxt", []) or []:
             ident = txt.get("id") or ""
             titre = txt.get("titre") or ""
@@ -149,7 +148,6 @@ def collecter_textes(noeud, sortie):
                     "ident": ident,
                     "lien": f"https://www.legifrance.gouv.fr/jorf/id/{ident}",
                 })
-        # On descend dans tous les sous-éléments (notamment 'tms', 'structure', 'containers')
         for v in noeud.values():
             collecter_textes(v, sortie)
     elif isinstance(noeud, list):
@@ -166,10 +164,10 @@ def veille_journal_officiel(mot_cle=None):
                       json={"nbElement": 1}, headers=headers, timeout=30)
     r.raise_for_status()
     payload = r.json()
-    # Le dernier JO peut arriver sous 'results', 'containers' ou 'jo'
     containers = payload.get("containers") or payload.get("results") or payload.get("jo") or []
     if not containers:
-        return {"date": "", "textes": [], "info": "Aucun JO retourné par l'API"}
+        return {"date": "", "textes": [], "total_textes_jo": 0,
+                "info": "Aucun JO retourné par l'API"}
 
     dernier = containers[0]
     jo_id = dernier.get("id") or dernier.get("cid")
@@ -189,7 +187,6 @@ def veille_journal_officiel(mot_cle=None):
     r2.raise_for_status()
     sommaire = r2.json()
 
-    # Récupérer la date depuis le sommaire si pas déjà trouvée
     if not jo_date:
         som_containers = sommaire.get("containers") or []
         if som_containers:
@@ -241,36 +238,6 @@ def api_veille():
                         "detail": e.response.text[:300], "textes": []}), 502
     except Exception as e:
         return jsonify({"error": str(e), "textes": []}), 500
-
-
-@app.route("/api/debug")
-def api_debug():
-    """Route temporaire : inspecte la structure brute renvoyée par Légifrance."""
-    try:
-        token = get_token()
-        headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
-
-        r = requests.post(f"{API_BASE}/consult/lastNJo",
-                          json={"nbElement": 1}, headers=headers, timeout=30)
-        last_json = r.json()
-        containers = last_json.get("containers") or last_json.get("results") or []
-        if not containers:
-            return jsonify({"etape": "lastNJo", "cles_reponse": list(last_json.keys()),
-                            "brut": last_json})
-        dernier = containers[0]
-        jo_id = dernier.get("id") or dernier.get("cid")
-        r2 = requests.post(f"{API_BASE}/consult/jorfCont",
-                           json={"id": jo_id}, headers=headers, timeout=30)
-        som = r2.json()
-        tous = []
-        collecter_textes(som, tous)
-        return jsonify({"etape": "jorfCont", "jo_id": jo_id,
-                        "total_textes_extraits": len(tous),
-                        "apercu_5_premiers": tous[:5]})
-    except requests.HTTPError as e:
-        return jsonify({"error": e.response.status_code, "detail": e.response.text[:500]})
-    except Exception as e:
-        return jsonify({"error": str(e)})
 
 
 @app.route("/api/health")
