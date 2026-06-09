@@ -26,7 +26,17 @@ from flask import Flask, jsonify, request
 from flask_cors import CORS
 
 app = Flask(__name__)
-CORS(app)
+# CORS large et explicite : autorise toute origine sur les routes /api/*
+# (nécessaire pour que le front — artifact, site déployé — puisse lire la réponse)
+CORS(app, resources={r"/api/*": {"origins": "*"}})
+
+
+@app.after_request
+def ajouter_entetes_cors(response):
+    response.headers["Access-Control-Allow-Origin"] = "*"
+    response.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
+    response.headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization"
+    return response
 
 # ─── CONFIG PISTE (lue depuis les variables d'environnement Render) ──
 CLIENT_ID = os.environ.get("PISTE_CLIENT_ID", "")
