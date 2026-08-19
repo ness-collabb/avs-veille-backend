@@ -70,22 +70,22 @@ def detecter_type(title):
 
 
 def collecter_textes(noeud, sortie):
-    """Parcourt récursivement le sommaire JORF et récupère chaque texte."""
+    """Parcourt récursivement le sommaire JORF et récupère chaque texte.
+    L'API PISTE range les textes avec 'id' (JORFTEXT...) + 'titre' + 'nature'."""
     if isinstance(noeud, dict):
-        # Un texte a généralement un 'id' (JORFTEXT...) et un 'title' / 'pathTitle'
-        ident = noeud.get("id") or noeud.get("cid") or ""
-        titre = noeud.get("title") or noeud.get("pathTitle") or ""
+        ident = noeud.get("id") or ""
+        titre = noeud.get("titre") or noeud.get("title") or ""
         if isinstance(titre, list):
             titre = " ".join(str(x) for x in titre)
-        if ident and "JORFTEXT" in str(ident) and titre:
+        # On garde uniquement les vrais textes (JORFTEXT) avec un titre
+        if ident and "JORFTEXT" in str(ident) and titre and len(titre) > 8:
             sortie.append({
                 "titre": titre.strip(),
-                "type": detecter_type(titre),
+                "type": (noeud.get("nature") or detecter_type(titre)).capitalize(),
                 "nor": noeud.get("nor") or ident,
                 "ident": ident,
                 "lien": f"https://www.legifrance.gouv.fr/jorf/id/{ident}",
             })
-        # On descend dans tous les sous-éléments
         for v in noeud.values():
             collecter_textes(v, sortie)
     elif isinstance(noeud, list):
