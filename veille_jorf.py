@@ -159,6 +159,43 @@ def api_veille():
         return jsonify({"error": str(e), "textes": []}), 500
 
 
+@app.route("/api/debug2")
+def api_debug2():
+    """Analyse fine : trouve les objets contenant JORFTEXT et montre leurs clés."""
+    if not CLIENT_ID or not CLIENT_SECRET:
+        return jsonify({"error": "Identifiants manquants"}), 500
+    try:
+        token = get_token()
+        headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+        r = requests.post(f"{API_BASE}/consult/lastNJo",
+                          json={"nbElement": 1}, headers=headers, timeout=30)
+        data = r.json()
+
+        # On cherche récursivement tout dict qui contient un id JORFTEXT
+        trouves = []
+        def explorer(n):
+            if isinstance(n, dict):
+                idv = n.get("id", "")
+                if isinstance(idv, str) and "JORFTEXT" in idv:
+                    trouves.append({"cles": list(n.keys()),
+                                    "id": idv,
+                                    "titre": n.get("titre", "??")[:80] if isinstance(n.get("titre"), str) else n.get("titre")})
+                for v in n.values():
+                    explorer(v)
+            elif isinstance(n, list):
+                for v in n:
+                    explorer(v)
+        explorer(data)
+
+        return jsonify({
+            "cles_racine": list(data.keys()),
+            "nb_textes_jorf_trouves": len(trouves),
+            "3_premiers": trouves[:3],
+        })
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
 @app.route("/api/debug")
 def api_debug():
     """Montre la réponse brute de l'API pour comprendre sa structure."""
