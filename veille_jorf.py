@@ -146,6 +146,8 @@ def api_veille():
             "env": ENV,
             "date": data.get("date", ""),
             "count": len(data["textes"]),
+            "total_textes_jo": data.get("total_textes_jo", 0),
+            "exemples_titres": data.get("exemples_titres", []),
             "motsCles": MOTS_CLES,
             "source": f"API PISTE Légifrance ({ENV})",
             "textes": data["textes"],
