@@ -159,6 +159,25 @@ def api_veille():
         return jsonify({"error": str(e), "textes": []}), 500
 
 
+@app.route("/api/debug")
+def api_debug():
+    """Montre la réponse brute de l'API pour comprendre sa structure."""
+    if not CLIENT_ID or not CLIENT_SECRET:
+        return jsonify({"error": "Identifiants manquants"}), 500
+    try:
+        token = get_token()
+        headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+        # Appel lastNJo, on renvoie la réponse TELLE QUELLE
+        r = requests.post(f"{API_BASE}/consult/lastNJo",
+                          json={"nbElement": 1}, headers=headers, timeout=30)
+        return jsonify({
+            "status_http": r.status_code,
+            "reponse_brute": r.json() if r.headers.get("content-type","").startswith("application/json") else r.text[:1000],
+        })
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
 @app.route("/api/health")
 def health():
     ok_creds = bool(CLIENT_ID and CLIENT_SECRET)
